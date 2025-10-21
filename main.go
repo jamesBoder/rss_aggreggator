@@ -113,6 +113,35 @@ func handlerRegister(state *state, command command) error {
 	return nil
 }
 
+// add a reset command that deletes all users from the database
+func handlerReset(state *state, command command) error {
+	err := state.db.DeleteAllUsers(context.Background())
+	if err != nil {
+		return fmt.Errorf("error deleting all users: %v", err)
+	}
+	fmt.Println("All users deleted successfully")
+	return nil
+}
+
+// add a users command that lists all users and prints them to the console in this format: * <user>. make sure current user is marked with (current)
+func handlerUsers(state *state, command command) error {
+	users, err := state.db.GetAllUsers(context.Background())
+	if err != nil {
+		return fmt.Errorf("error fetching all users: %v", err)
+	}
+
+	currentUser := state.cfg.CurrentUserName
+
+	for _, user := range users {
+		if user.Name == currentUser {
+			fmt.Printf("* %s (current)\n", user.Name)
+		} else {
+			fmt.Printf("* %s\n", user.Name)
+		}
+	}
+	return nil
+}
+
 func main() {
 
 	// read config file
@@ -120,9 +149,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error reading config: %v", err)
 	}
-
-	// debug to confirm config file read
-	fmt.Println("DB URL:", cfg.DBUrl)
 
 	// store config file in a new instance of state struct
 	s := &state{
@@ -140,6 +166,12 @@ func main() {
 	// register the register command
 	cmds.register("register", handlerRegister)
 
+	// register the reset command
+	cmds.register("reset", handlerReset)
+
+	// register the users command
+	cmds.register("users", handlerUsers)
+
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
 	db, err := sql.Open("postgres", cfg.DBUrl)
@@ -147,9 +179,6 @@ func main() {
 		log.Fatalf("Error opening database: %v", err)
 	}
 	defer db.Close()
-
-	fmt.Println("Successfully connected to the database")
-	fmt.Println("CLI tool initialized successfully")
 
 	// use generated database to create a new *database.Queries
 	dbQueries := database.New(db)
