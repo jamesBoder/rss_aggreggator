@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/xml"
 	"fmt"
+	"html"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -142,6 +146,97 @@ func handlerUsers(state *state, command command) error {
 	return nil
 }
 
+// define RSSfeed struct to hold feed data
+type RSSFeed struct {
+	Channel struct {
+		Title       string    `xml:"title"`
+		Link        string    `xml:"link"`
+		Description string    `xml:"description"`
+		Item        []RSSItem `xml:"item"`
+	} `xml:"channel"`
+}
+
+// define RSSItem struct to hold individual feed items
+type RSSItem struct {
+	Title       string `xml:"title"`
+	Link        string `xml:"link"`
+	Description string `xml:"description"`
+	PubDate     string `xml:"pubDate"`
+}
+
+// create fetchFeed function. Fetch a feed from the URL and return a RSSfeed struct pointer and error
+func fetchFeed(ctx context.Context, feedURL string) (*RSSFeed, error) {
+	// http.NewRequestWithContext to create a new GET request with the given context and feedURL
+	req, err := http.NewRequestWithContext(ctx, "GET", feedURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %v", err)
+	}
+
+	// set User-Agent header to "gator" with request.Header.Set
+	req.Header.Set("User-Agent", "gator")
+
+	// use http.Client.Do to send the request and get a response
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching feed: %v", err)
+	}
+
+	// ensure resp.Body is closed after reading
+	defer resp.Body.Close()
+
+	// check if response status code is 200
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("non-200 response: %d", resp.StatusCode)
+	}
+
+	// use io.ReadAll to read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	// use xml.Unmarshal to parse the body into a RSSfeed struct
+	var feed RSSFeed
+	if err := xml.Unmarshal(body, &feed); err != nil {
+		return nil, fmt.Errorf("error unmarshaling feed: %v", err)
+	}
+
+	// ensure both Title and Description are decoded using html.UnescapeString. Make sure no case changes, trimming, or other modifications are made
+	feed.Channel.Title = decodeHTMLEntities(feed.Channel.Title)
+	feed.Channel.Description = decodeHTMLEntities(feed.Channel.Description)
+	for i := range feed.Channel.Item {
+		feed.Channel.Item[i].Title = decodeHTMLEntities(feed.Channel.Item[i].Title)
+		feed.Channel.Item[i].Description = decodeHTMLEntities(feed.Channel.Item[i].Description)
+	}
+
+	// return the RSSfeed struct pointer
+
+	return &feed, nil
+}
+
+// use html.UnescapeString to decode escaped HTML entities. Run Title and Description through this function before storing or displaying
+func decodeHTMLEntities(s string) string {
+	return html.UnescapeString(s)
+}
+
+// add agg command to fetch a single RSS feed and print the titles of the items to the console. It takes no arguments and should fetch the feed found at https://www.wagslane.dev/index.xml. Print entire parsed struct. Don't call decodeHTMLEntities here; it's called in fetchFeed.
+func handlerAgg(state *state, command command) error {
+	feedURL := "https://www.wagslane.dev/index.xml"
+	feed, err := fetchFeed(context.Background(), feedURL)
+	if err != nil {
+		return fmt.Errorf("error fetching feed: %v", err)
+	}
+
+	// print the entire parsed struct
+	// go
+	fmt.Println(feed.Channel.Description)
+	fmt.Printf("%+v\n", feed)
+
+	return nil
+
+}
+
 func main() {
 
 	// read config file
@@ -171,6 +266,9 @@ func main() {
 
 	// register the users command
 	cmds.register("users", handlerUsers)
+
+	// register the agg command
+	cmds.register("agg", handlerAgg)
 
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
