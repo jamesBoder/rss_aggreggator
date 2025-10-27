@@ -359,6 +359,23 @@ func runMigrations(db *sql.DB, dir string) error {
 	return nil
 }
 
+// add a feeds handler. it takes no arguments and prints all the fees in the database. Include name, Url, and name of user that created the feed.
+func handlerFeeds(state *state, command command) error {
+	feeds, err := state.db.GetAllFeeds(context.Background())
+	if err != nil {
+		return fmt.Errorf("error fetching all feeds: %v", err)
+	}
+
+	for _, feed := range feeds {
+		user, err := state.db.GetUserByID(context.Background(), feed.UserID)
+		if err != nil {
+			return fmt.Errorf("error fetching user for feed %s: %v", feed.Name, err)
+		}
+		fmt.Printf("* Name: %s, URL: %s, User: %s\n", feed.Name, feed.Url, user.Name)
+	}
+	return nil
+}
+
 func main() {
 
 	// read config file
@@ -394,6 +411,9 @@ func main() {
 
 	// register the addFeed command
 	cmds.register("addfeed", handlerAddFeed)
+
+	// register the feeds command
+	cmds.register("feeds", handlerFeeds)
 
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
