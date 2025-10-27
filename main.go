@@ -10,6 +10,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -27,6 +30,9 @@ type state struct {
 
 	// points to database queries
 	db *database.Queries
+
+	// point to raw *sql.DB
+	dbSQL *sql.DB
 }
 
 // Create a command struct. Contains a name and a slice of string args
@@ -118,11 +124,51 @@ func handlerRegister(state *state, command command) error {
 }
 
 // add a reset command that deletes all users from the database
+
 func handlerReset(state *state, command command) error {
-	err := state.db.DeleteAllUsers(context.Background())
+
+	entries, err := os.ReadDir("sql/schema")
 	if err != nil {
-		return fmt.Errorf("error deleting all users: %v", err)
+		return fmt.Errorf("failed to read migrations directory: %w", err)
 	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		fmt.Println("Applying:", e.Name())
+		fmt.Println("Applied:", e.Name())
+
+	}
+
+	// // before running migrations, db.Exec a DROP TABLE IF EXISTS users CASCADE; db.Exec a DROP TABLE IF EXISTS feeds CASCADE; db.Exec a DROP EXTENSION IF EXISTS "pgcrypto";
+	// db.Exec a CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+	_, err = state.dbSQL.Exec(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`)
+	if err != nil {
+		return fmt.Errorf("error creating extension: %v", err)
+	}
+	fmt.Println("Created extension successfully")
+
+	// db.Exec a DROP TABLE IF EXISTS feeds CASCADE;
+	_, err = state.dbSQL.Exec(`DROP TABLE IF EXISTS feeds CASCADE;`)
+	if err != nil {
+		return fmt.Errorf("error dropping feeds table: %v", err)
+	}
+	fmt.Println("Dropped feeds table successfully")
+
+	// db.Exec a DROP TABLE IF EXISTS users CASCADE;
+	_, err = state.dbSQL.Exec(`DROP TABLE IF EXISTS users CASCADE;`)
+	if err != nil {
+		return fmt.Errorf("error dropping users table: %v", err)
+	}
+	fmt.Println("Dropped users table successfully")
+
+	// run migrations
+
+	if err := runMigrations(state.dbSQL, "sql/schema"); err != nil {
+		return fmt.Errorf("error running migrations: %v", err)
+	}
+
 	fmt.Println("All users deleted successfully")
 	return nil
 }
@@ -237,6 +283,82 @@ func handlerAgg(state *state, command command) error {
 
 }
 
+// add command addFeed. It takes the name of the feed and the URL as arguments. At the top of the handler, get current user from the database and connect the feedto that user. the print out the fields of the new feed record.
+func handlerAddFeed(state *state, command command) error {
+
+	// get current user from the database
+	if len(command.Args) < 2 {
+		return fmt.Errorf("feed name and URL arguments are required")
+	}
+
+	// confirm a current user exists
+	if state.cfg.CurrentUserName == "" {
+		return fmt.Errorf("no user logged in")
+	}
+
+	// print current user
+	fmt.Println("current user:", state.cfg.CurrentUserName)
+
+	feedName := command.Args[0]
+	feedURL := command.Args[1]
+
+	user, err := state.db.GetUserByName(context.Background(), state.cfg.CurrentUserName)
+	if err != nil {
+		return fmt.Errorf("error fetching current user: %v", err)
+	}
+
+	params := database.CreateFeedParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		Name:      feedName,
+		Url:       feedURL,
+	}
+
+	feed, err := state.db.CreateFeed(context.Background(), params)
+	if err != nil {
+		return fmt.Errorf("error creating feed: %v", err)
+	}
+
+	fmt.Printf("Feed created: %+v\n", feed)
+	return nil
+}
+
+func runMigrations(db *sql.DB, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".sql") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return err
+		}
+		s := string(b)
+		parts := strings.Split(s, "-- +goose Up")
+		if len(parts) < 2 {
+			continue
+		}
+		up := parts[1]
+		if i := strings.Index(up, "-- +goose Down"); i >= 0 {
+			up = up[:i]
+		}
+		up = strings.TrimSpace(up)
+		if up == "" {
+			continue
+		}
+		if _, err := db.Exec(up); err != nil {
+			return fmt.Errorf("migration %s failed: %w", e.Name(), err)
+		}
+	}
+	return nil
+}
+
 func main() {
 
 	// read config file
@@ -270,6 +392,9 @@ func main() {
 	// register the agg command
 	cmds.register("agg", handlerAgg)
 
+	// register the addFeed command
+	cmds.register("addfeed", handlerAddFeed)
+
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
 	db, err := sql.Open("postgres", cfg.DBUrl)
@@ -283,6 +408,9 @@ func main() {
 
 	// store database queries in state struct
 	s.db = dbQueries
+
+	// store raw *sql.DB in state struct
+	s.dbSQL = db
 
 	// use os.Args to get command line args. if fewer than 2 args print error and exit
 	args := os.Args
