@@ -284,28 +284,15 @@ func handlerAgg(state *state, command command) error {
 }
 
 // add command addFeed. It takes the name of the feed and the URL as arguments. At the top of the handler, get current user from the database and connect the feedto that user. the print out the fields of the new feed record.
-func handlerAddFeed(state *state, command command) error {
+func handlerAddFeed(state *state, command command, user database.User) error {
 
 	// get current user from the database
 	if len(command.Args) < 2 {
 		return fmt.Errorf("feed name and URL arguments are required")
 	}
 
-	// confirm a current user exists
-	if state.cfg.CurrentUserName == "" {
-		return fmt.Errorf("no user logged in")
-	}
-
-	// print current user
-	fmt.Println("current user:", state.cfg.CurrentUserName)
-
 	feedName := command.Args[0]
 	feedURL := command.Args[1]
-
-	user, err := state.db.GetUserByName(context.Background(), state.cfg.CurrentUserName)
-	if err != nil {
-		return fmt.Errorf("error fetching current user: %v", err)
-	}
 
 	params := database.CreateFeedParams{
 		ID:        uuid.New(),
@@ -316,10 +303,25 @@ func handlerAddFeed(state *state, command command) error {
 		Url:       feedURL,
 	}
 
+	// create a feed follow record for the current user when they add a feed
 	feed, err := state.db.CreateFeed(context.Background(), params)
 	if err != nil {
 		return fmt.Errorf("error creating feed: %v", err)
 	}
+
+	// create a feed follow record for the current user
+	_, err = state.db.CreateFeedFollow(context.Background(), database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("error creating feed follow: %v", err)
+	}
+
+	fmt.Printf("Feed follow created for user %s to feed %s\n", user.Name, feed.Name)
 
 	fmt.Printf("Feed created: %+v\n", feed)
 	return nil
@@ -376,6 +378,95 @@ func handlerFeeds(state *state, command command) error {
 	return nil
 }
 
+// add a follow command. takes a single url and creates a new feed follow for the current user. It should print the name of the feed and the current user once the record is created. create query in sql/queries to look up feeds by URL
+func handlerFollow(s *state, cmd command, user database.User) error {
+
+	if len(cmd.Args) < 1 {
+		return fmt.Errorf("feed URL argument is required")
+	}
+
+	ctx := context.Background()
+	feedURL := cmd.Args[0]
+
+	feed, err := s.db.GetFeedByURL(ctx, feedURL)
+	if err != nil {
+		return fmt.Errorf("error fetching feed by URL: %v", err)
+	}
+
+	_, err = s.db.CreateFeedFollow(ctx, database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		UserID:    user.ID,
+		FeedID:    feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("error creating feed follow: %v", err)
+	}
+
+	// Assuming your SQL returns feed_name and user_name columns
+	// go
+	fmt.Printf("Followed feed %s as user %s\n", feed.Name, user.Name)
+	return nil
+}
+
+// add a following command. it should print all the names of the fees the current user is following. use GetFeedFollowsForUser query
+func handlerFollowing(s *state, cmd command, user database.User) error {
+
+	ctx := context.Background()
+
+	ffs, err := s.db.GetFeedFollowsForUser(ctx, user.ID)
+	if err != nil {
+		return fmt.Errorf("error fetching feed follows for user: %v", err)
+	}
+
+	for _, ff := range ffs {
+		fmt.Println(ff.FeedName)
+	}
+	return nil
+}
+
+// create logged-in middleware. it will change the function signature of our handlers to require a logged-in user. if no user is logged in, it will return an error before calling the handler function
+func middlewareLoggedIn(handler func(s *state, cmd command, user database.User) error) func(*state, command) error {
+	return func(s *state, cmd command) error {
+		if s.cfg.CurrentUserName == "" {
+			return fmt.Errorf("no user logged in")
+		}
+		ctx := context.Background()
+		user, err := s.db.GetUserByName(ctx, s.cfg.CurrentUserName)
+		if err != nil {
+			return fmt.Errorf("error fetching current user: %v", err)
+		}
+		return handler(s, cmd, user)
+	}
+}
+
+// create a unfollow command. it takes a feed URL as and argument and unfollows it for the current user. use the middlewareLoggedIn to ensure user is logged in. create a new query DeleteFeedFollowByUserAndFeedID in sql/queries/feed_follows.sql
+func handlerUnfollow(s *state, cmd command, user database.User) error {
+	if len(cmd.Args) < 1 {
+		return fmt.Errorf("feed URL argument is required")
+	}
+
+	ctx := context.Background()
+	feedURL := cmd.Args[0]
+
+	feed, err := s.db.GetFeedByURL(ctx, feedURL)
+	if err != nil {
+		return fmt.Errorf("error fetching feed by URL: %v", err)
+	}
+
+	err = s.db.DeleteFeedFollowByUserAndFeedID(ctx, database.DeleteFeedFollowByUserAndFeedIDParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("error deleting feed follow: %v", err)
+	}
+
+	fmt.Printf("Unfollowed feed %s as user %s\n", feed.Name, user.Name)
+	return nil
+}
+
 func main() {
 
 	// read config file
@@ -410,10 +501,25 @@ func main() {
 	cmds.register("agg", handlerAgg)
 
 	// register the addFeed command
-	cmds.register("addfeed", handlerAddFeed)
+	cmds.register("addfeed", middlewareLoggedIn(handlerAddFeed))
 
 	// register the feeds command
 	cmds.register("feeds", handlerFeeds)
+
+	// register the follow command
+	cmds.register("follow", middlewareLoggedIn(handlerFollow))
+
+	// register the following command
+	cmds.register("following", middlewareLoggedIn(handlerFollowing))
+
+	// register middleware function
+	cmds.register("protected_example", middlewareLoggedIn(func(s *state, cmd command, user database.User) error {
+		fmt.Printf("This is a protected command. Current user: %s\n", user.Name)
+		return nil
+	}))
+
+	// register unfollow command
+	cmds.register("unfollow", middlewareLoggedIn(handlerUnfollow))
 
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
