@@ -13,3 +13,4 @@ CREATE TABLE IF NOT EXISTS feeds (
 
 -- +goose Down
 DROP TABLE IF EXISTS feeds;
+

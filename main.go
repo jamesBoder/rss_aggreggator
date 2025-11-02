@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -163,11 +164,18 @@ func handlerReset(state *state, command command) error {
 	}
 	fmt.Println("Dropped users table successfully")
 
+	// drop goose_db_version table if it exists
+	_, err = state.dbSQL.Exec(`DROP TABLE IF EXISTS goose_db_version;`)
+	if err != nil {
+		return fmt.Errorf("error dropping goose_db_version table: %v", err)
+	}
+	fmt.Println("Dropped goose_db_version table successfully")
+
 	// run migrations
 
-	if err := runMigrations(state.dbSQL, "sql/schema"); err != nil {
-		return fmt.Errorf("error running migrations: %v", err)
-	}
+	//if err := runMigrations(state.dbSQL, "sql///schema"); err != nil {
+	//return fmt.Errorf("error running migrations: %v", err)
+	//}
 
 	fmt.Println("All users deleted successfully")
 	return nil
@@ -266,21 +274,29 @@ func decodeHTMLEntities(s string) string {
 	return html.UnescapeString(s)
 }
 
-// add agg command to fetch a single RSS feed and print the titles of the items to the console. It takes no arguments and should fetch the feed found at https://www.wagslane.dev/index.xml. Print entire parsed struct. Don't call decodeHTMLEntities here; it's called in fetchFeed.
+// update handlerAgg command to take a single argument: time_between_reqs. it should print a message when it starts. Use time.Ticker to run scrapeFeeds function at the given interval. Print a message each time before calling scrapeFeeds. if time_between_reqs is not provided, default to 10 seconds.
 func handlerAgg(state *state, command command) error {
-	feedURL := "https://www.wagslane.dev/index.xml"
-	feed, err := fetchFeed(context.Background(), feedURL)
-	if err != nil {
-		return fmt.Errorf("error fetching feed: %v", err)
+	interval := 10 * time.Second
+	if len(command.Args) >= 1 {
+		dur, err := time.ParseDuration(command.Args[0])
+		if err != nil {
+			return fmt.Errorf("invalid duration: %v", err)
+		}
+		interval = dur
 	}
 
-	// print the entire parsed struct
-	// go
-	fmt.Println(feed.Channel.Description)
-	fmt.Printf("%+v\n", feed)
+	fmt.Printf("Starting aggregator with interval: %s\n", interval)
 
-	return nil
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
+	for {
+		fmt.Println("Scraping feeds...")
+		if err := scrapeFeeds(state); err != nil {
+			fmt.Printf("Error scraping feeds: %v\n", err)
+		}
+		<-ticker.C
+	}
 }
 
 // add command addFeed. It takes the name of the feed and the URL as arguments. At the top of the handler, get current user from the database and connect the feedto that user. the print out the fields of the new feed record.
@@ -467,6 +483,99 @@ func handlerUnfollow(s *state, cmd command, user database.User) error {
 	return nil
 }
 
+// create an agg function labeled scrapeFeeds. it should get the next feed to fetch using GetNextFeedToFetch, mark it as fetched using MarkFeedFetched, fetch the feed using fetchFeed, iterate over the items and save items to posts database using CreatePost. make sure to skip duplicate posts based on the feed URL and post title
+func scrapeFeeds(s *state) error {
+	ctx := context.Background()
+
+	feed, err := s.db.GetNextFeedToFetch(ctx)
+	if err != nil {
+		return fmt.Errorf("error getting next feed to fetch: %v", err)
+	}
+
+	if err := s.db.MarkFeedFetched(ctx, feed.ID); err != nil {
+		return fmt.Errorf("error marking feed as fetched: %v", err)
+	}
+
+	rssFeed, err := fetchFeed(ctx, feed.Url)
+	if err != nil {
+		return fmt.Errorf("error fetching feed: %v", err)
+	}
+
+	for _, item := range rssFeed.Channel.Item {
+		pubDate, _ := time.Parse(time.RFC1123Z, item.PubDate)
+
+		params := database.CreatePostParams{
+			ID:        uuid.New(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+			FeedID:    feed.ID,
+			Title:     item.Title,
+			Url:       item.Link,
+			Description: sql.NullString{
+				String: item.Description,
+				Valid:  item.Description != "",
+			},
+			PublishedAt: pubDate,
+		}
+
+		_, err := s.db.CreatePost(ctx, params)
+		if err != nil {
+			if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
+				continue
+			}
+			return fmt.Errorf("error creating post: %v", err)
+		}
+	}
+
+	return nil
+
+}
+
+func handlerFeedsStatus(s *state, cmd command) error {
+	rows, err := s.dbSQL.Query(`SELECT id, name, last_fetched_at, updated_at FROM feeds ORDER BY last_fetched_at NULLS FIRST, updated_at ASC`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		var last, upd sql.NullTime
+		if err := rows.Scan(&id, &name, &last, &upd); err != nil {
+			return err
+		}
+		fmt.Printf("* %s | %s | last=%v | upd=%v\n", id, name, last.Time, upd.Time)
+	}
+	return rows.Err()
+}
+
+// browse command that takes an optional limit parameter if not provided it defaults to 2. Print the posts in the terminal
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	limit := 2
+	var err error
+
+	if len(cmd.Args) > 0 {
+		limit, err = strconv.Atoi(cmd.Args[0])
+		if err != nil {
+			return fmt.Errorf("invalid limit: %v", err)
+		}
+	}
+
+	posts, err := s.db.GetPostsForUser(context.Background(), database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  int32(limit),
+	})
+	if err != nil {
+		return fmt.Errorf("error fetching posts: %v", err)
+	}
+
+	for _, post := range posts {
+		fmt.Printf("* %s\n%s\nPublished at: %s\n---\n",
+			post.Title, post.Description.String, post.PublishedAt.Format(time.RFC3339))
+	}
+
+	return nil
+}
+
 func main() {
 
 	// read config file
@@ -520,6 +629,17 @@ func main() {
 
 	// register unfollow command
 	cmds.register("unfollow", middlewareLoggedIn(handlerUnfollow))
+
+	// register scrapeFeeds command
+	cmds.register("scrapeFeeds", func(s *state, cmd command) error {
+		return scrapeFeeds(s)
+	})
+
+	// register feedsStatus command
+	cmds.register("feeds:status", handlerFeedsStatus)
+
+	// register browse command
+	cmds.register("browse", middlewareLoggedIn(handlerBrowse))
 
 	// load database URL to the config struct and open a connection to dbURL using sql.Open
 
