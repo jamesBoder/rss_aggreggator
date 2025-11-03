@@ -1,6 +1,6 @@
-# RSS Aggregator
+# Gator - RSS Aggregator
 
-A simple CLI tool to aggregate and read RSS feeds from the command line.
+A simple CLI tool called **gator** to aggregate and read RSS feeds from the command line.
 
 ## Prerequisites
 
@@ -9,10 +9,18 @@ A simple CLI tool to aggregate and read RSS feeds from the command line.
 
 ## Installation
 
-Install the CLI tool using Go:
-
+### Option 1: Install via go install
 ```bash
-go install github.com/jamesBoder/rss_aggreggator@latest
+go install github.com/jamesBoder/rss_aggreggator/cmd/gator@latest
+```
+
+### Option 2: Build locally
+```bash
+git clone https://github.com/jamesBoder/rss_aggreggator.git
+cd rss_aggreggator
+go build -o gator ./cmd/gator
+# Move to your PATH (optional)
+sudo mv gator /usr/local/bin/
 ```
 
 ## Setup
@@ -39,51 +47,51 @@ createdb rss_aggregator
 
 ### Register a new user
 ```bash
-rss_aggreggator register <your_username>
+gator register <your_username>
 ```
 
 ### Add an RSS feed
 ```bash
-rss_aggreggator addfeed "Blog Name" https://example.com/feed.xml
+gator addfeed "Blog Name" https://example.com/feed.xml
 ```
 
 ### Follow a feed
 ```bash
-rss_aggreggator follow https://example.com/feed.xml
+gator follow https://example.com/feed.xml
 ```
 
 ### Start aggregating feeds
 ```bash
-rss_aggreggator agg 1m
+gator agg 1m
 ```
 This will fetch new posts every minute. Press `Ctrl+C` to stop.
 
 ### Browse your posts
 ```bash
-rss_aggreggator browse 10
+gator browse 10
 ```
 Shows the 10 most recent posts from feeds you follow.
 
 ### Other useful commands
-- `rss_aggreggator users` - List all users
-- `rss_aggreggator feeds` - List all feeds
-- `rss_aggreggator following` - See feeds you're following
-- `rss_aggreggator unfollow <feed_url>` - Unfollow a feed
+- `gator users` - List all users
+- `gator feeds` - List all feeds
+- `gator following` - See feeds you're following
+- `gator unfollow <feed_url>` - Unfollow a feed
 
 ## Quick Start Example
 
 ```bash
 # Register yourself
-rss_aggreggator register john
+gator register john
 
 # Add and follow a feed
-rss_aggreggator addfeed "TechCrunch" https://techcrunch.com/feed/
+gator addfeed "TechCrunch" https://techcrunch.com/feed/
 
 # Start aggregating (in a separate terminal)
-rss_aggreggator agg 5m
+gator agg 5m
 
 # Browse posts
-rss_aggreggator browse 5
+gator browse 5
 ```
 
 Enjoy reading your RSS feeds!
